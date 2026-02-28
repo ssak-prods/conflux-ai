@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" 
+    content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+  <style>
+    /* ─── Reset & Base ─── */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+      font-size: var(--vscode-font-size, 13px);
+      color: var(--vscode-foreground, #ccc);
+      background: var(--vscode-sideBar-background, #1e1e1e);
+      line-height: 1.5;
+      overflow-x: hidden;
+    }
+
+    /* ─── Tab Bar ─── */
+    .tab-bar {
+      display: flex;
+      border-bottom: 1px solid var(--vscode-panel-border, #333);
+      background: var(--vscode-sideBar-background, #1e1e1e);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .tab {
+      flex: 1;
+      padding: 8px 4px;
+      text-align: center;
+      cursor: pointer;
+      font-size: 16px;
+      opacity: 0.5;
+      transition: opacity 0.2s, border-color 0.2s;
+      border-bottom: 2px solid transparent;
+      user-select: none;
+    }
+    .tab:hover { opacity: 0.8; }
+    .tab.active {
+      opacity: 1;
+      border-bottom-color: var(--vscode-focusBorder, #007acc);
+    }
+    .tab .badge {
+      font-size: 9px;
+      background: var(--vscode-badge-background, #4d4d4d);
+      color: var(--vscode-badge-foreground, #fff);
+      border-radius: 8px;
+      padding: 1px 5px;
+      margin-left: 2px;
+      vertical-align: top;
+    }
+
+    /* ─── Tab Content ─── */
+    .tab-content { display: none; padding: 12px; }
+    .tab-content.active { display: block; }
+
+    /* ─── Welcome Screen ─── */
+    .welcome {
+      text-align: center;
+      padding: 40px 16px;
+    }
+    .welcome h1 {
+      font-size: 1.4em;
+      margin-bottom: 4px;
+      color: var(--vscode-foreground, #eee);
+    }
+    .welcome .tagline {
+      color: var(--vscode-descriptionForeground, #888);
+      margin-bottom: 28px;
+      font-size: 0.9em;
+    }
+    .welcome .btn-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-width: 220px;
+      margin: 0 auto;
+    }
+    .btn {
+      padding: 10px 16px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.92em;
+      font-family: inherit;
+      transition: background 0.15s, transform 0.1s;
+    }
+    .btn:active { transform: scale(0.97); }
+    .btn-primary {
+      background: var(--vscode-button-background, #007acc);
+      color: var(--vscode-button-foreground, #fff);
+    }
+    .btn-primary:hover {
+      background: var(--vscode-button-hoverBackground, #0098ff);
+    }
+    .btn-secondary {
+      background: var(--vscode-button-secondaryBackground, #333);
+      color: var(--vscode-button-secondaryForeground, #ccc);
+    }
+    .btn-secondary:hover {
+      background: var(--vscode-button-secondaryHoverBackground, #444);
+    }
+    .welcome .solo-hint {
+      margin-top: 20px;
+      font-size: 0.8em;
+      color: var(--vscode-descriptionForeground, #666);
+    }
+
+    /* ─── Project Code Display ─── */
+    .project-code {
+      font-family: 'Courier New', monospace;
+      font-size: 1.6em;
+      letter-spacing: 4px;
+      font-weight: bold;
+      color: var(--vscode-textLink-foreground, #4fc3f7);
+      background: var(--vscode-editor-background, #1e1e1e);
+      padding: 10px 16px;
+      border-radius: 6px;
+      border: 1px solid var(--vscode-panel-border, #333);
+      display: inline-block;
+      margin: 8px 0;
+      cursor: pointer;
+    }
+    .project-code:hover { opacity: 0.8; }
+
+    /* ─── Section Headers ─── */
+    .section-header {
+      font-size: 0.75em;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--vscode-descriptionForeground, #888);
+      margin: 16px 0 8px 0;
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--vscode-panel-border, #2a2a2a);
+    }
+
+    /* ─── Home Tab ─── */
+    .home-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .home-header .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #4caf50;
+    }
+    .home-header .status-dot.offline { background: #888; }
+    .home-header .project-name {
+      font-weight: 600;
+      font-size: 1em;
+    }
+
+    .stat-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .stat-card {
+      flex: 1;
+      background: var(--vscode-editor-background, #252526);
+      border-radius: 6px;
+      padding: 10px;
+      text-align: center;
+    }
+    .stat-card .number {
+      font-size: 1.4em;
+      font-weight: 700;
+      color: var(--vscode-foreground, #eee);
+    }
+    .stat-card .label {
+      font-size: 0.75em;
+      color: var(--vscode-descriptionForeground, #888);
+    }
+
+    .last-decision {
+      background: var(--vscode-editor-background, #252526);
+      border-radius: 6px;
+      padding: 12px;
+      border-left: 3px solid #4caf50;
+      margin-bottom: 12px;
+    }
+    .last-decision.pending { border-left-color: #ff9800; }
+    .last-decision .summary { margin-bottom: 4px; }
+    .last-decision .meta {
+      font-size: 0.8em;
+      color: var(--vscode-descriptionForeground, #888);
+    }
+
+    /* ─── Team Members ─── */
+    .member-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 0;
+    }
+    .avatar {
+      width: 24px; height: 24px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.7em;
+      font-weight: 700;
+      color: #fff;
+      flex-shrink: 0;
+    }
+    .member-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .member-name {
+      font-size: 0.9em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .member-activity {
+      font-size: 0.75em;
+      color: var(--vscode-descriptionForeground, #888);
+    }
+    .online-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #4caf50;
+      flex-shrink: 0;
+    }
+    .online-dot.away { background: #ff9800; }
+    .online-dot.offline { background: #666; }
+
+    /* ─── Brain Tab: Decision Timeline ─── */
+    .search-box {
+      width: 100%;
+      padding: 7px 10px;
+      border: 1px solid var(--vscode-input-border, #333);
+      background: var(--vscode-input-background, #252526);
+      color: var(--vscode-input-foreground, #ccc);
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 0.9em;
+      margin-bottom: 12px;
+      outline: none;
+    }
+    .search-box:focus {
+      border-color: var(--vscode-focusBorder, #007acc);
+    }
+    .search-box::placeholder {
+      color: var(--vscode-input-placeholderForeground, #666);
+    }
+
+    .day-separator {
+      font-size: 0.75em;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--vscode-descriptionForeground, #888);
+      margin: 14px 0 8px 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .day-separator::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--vscode-panel-border, #333);
+    }
+
+    .decision-card {
+      background: var(--vscode-editor-background, #252526);
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      border-left: 3px solid #4caf50;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .decision-card:hover {
+      background: var(--vscode-list-hoverBackground, #2a2d2e);
+    }
+    .decision-card.pending { border-left-color: #ff9800; }
+    .decision-card.new-entry {
+      animation: slideIn 0.3s ease-out;
+    }
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .decision-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+    .decision-badge {
+      font-size: 0.85em;
+    }
+    .decision-time {
+      font-size: 0.75em;
+      color: var(--vscode-descriptionForeground, #888);
+    }
+    .decision-author {
+      font-size: 0.75em;
+      color: var(--vscode-textLink-foreground, #4fc3f7);
+      margin-left: auto;
+    }
+    .decision-summary {
+      font-size: 0.9em;
+      line-height: 1.4;
+    }
+    .decision-file {
+      font-size: 0.75em;
+      color: var(--vscode-descriptionForeground, #888);
+      margin-top: 4px;
+      cursor: pointer;
+    }
+    .decision-file:hover {
+      color: var(--vscode-textLink-foreground, #4fc3f7);
+      text-decoration: underline;
+    }
+
+    /* Expanded decision */
+    .decision-details {
+      display: none;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--vscode-panel-border, #333);
+      font-size: 0.82em;
+      color: var(--vscode-descriptionForeground, #aaa);
+    }
+    .decision-card.expanded .decision-details { display: block; }
+
+    /* ─── Footer ─── */
+    .sidebar-footer {
+      padding: 10px 12px;
+      border-top: 1px solid var(--vscode-panel-border, #333);
+      font-size: 0.8em;
+      color: var(--vscode-descriptionForeground, #888);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      bottom: 0;
+      background: var(--vscode-sideBar-background, #1e1e1e);
+    }
+    .footer-btn {
+      background: var(--vscode-button-background, #007acc);
+      color: var(--vscode-button-foreground, #fff);
+      border: none;
+      padding: 5px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.95em;
+    }
+    .footer-btn:hover {
+      background: var(--vscode-button-hoverBackground, #0098ff);
+    }
+
+    /* ─── Empty States ─── */
+    .empty-state {
+      text-align: center;
+      padding: 32px 16px;
+      color: var(--vscode-descriptionForeground, #888);
+    }
+    .empty-state .emoji { font-size: 2em; margin-bottom: 8px; }
+    .empty-state p { font-size: 0.9em; margin-bottom: 8px; }
+
+    /* ─── Insights ─── */
+    .insight-card {
+      background: var(--vscode-editor-background, #252526);
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      border-left: 3px solid #ff9800;
+    }
+    .insight-card.info { border-left-color: var(--vscode-textLink-foreground, #4fc3f7); }
+    .insight-card .insight-title {
+      font-size: 0.9em;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .insight-card .insight-body {
+      font-size: 0.82em;
+      color: var(--vscode-descriptionForeground, #aaa);
+      line-height: 1.4;
+    }
+
+    /* Scrollbar styling */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: var(--vscode-scrollbarSlider-background, #444);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--vscode-scrollbarSlider-hoverBackground, #555);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ═══ Welcome Screen (shown when no project joined) ═══ -->
+  <div id="welcome-screen" class="welcome">
+    <h1>🧠 Conflux</h1>
+    <p class="tagline">Shared context for your whole team's AI, instantly.</p>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="cmd('startProject')">Start a New Project</button>
+      <button class="btn btn-secondary" onclick="cmd('joinProject')">Join Your Team</button>
+    </div>
+    <p class="solo-hint">Works alone too — just start coding and decisions will appear here.</p>
+  </div>
+
+  <!-- ═══ Main Interface (shown when in a project) ═══ -->
+  <div id="main-ui" style="display:none;">
+    <!-- Tab Bar -->
+    <div class="tab-bar">
+      <div class="tab active" data-tab="home" title="Home">🏠</div>
+      <div class="tab" data-tab="brain" title="Team Brain">🧠<span id="brain-badge" class="badge" style="display:none;">0</span></div>
+      <div class="tab" data-tab="team" title="Team">👥</div>
+      <div class="tab" data-tab="insights" title="Insights">⚡<span id="insights-badge" class="badge" style="display:none;">0</span></div>
+    </div>
+
+    <!-- ─── HOME TAB ─── -->
+    <div id="tab-home" class="tab-content active">
+      <div class="home-header">
+        <div class="status-dot" id="connection-dot"></div>
+        <span class="project-name" id="project-name">Conflux</span>
+        <span style="margin-left:auto; font-size:0.8em; color:var(--vscode-descriptionForeground,#888);" id="project-code-display"></span>
+      </div>
+
+      <div class="stat-row">
+        <div class="stat-card">
+          <div class="number" id="stat-decisions">0</div>
+          <div class="label">decisions</div>
+        </div>
+        <div class="stat-card">
+          <div class="number" id="stat-online">1</div>
+          <div class="label">online</div>
+        </div>
+        <div class="stat-card">
+          <div class="number" id="stat-confirmed">0</div>
+          <div class="label">confirmed</div>
+        </div>
+      </div>
+
+      <div class="section-header">Latest</div>
+      <div id="last-decision-area">
+        <div class="empty-state">
+          <div class="emoji">🎯</div>
+          <p>No decisions yet — start coding!</p>
+          <p style="font-size:0.8em;">Conflux automatically captures architectural decisions from your code changes.</p>
+        </div>
+      </div>
+
+      <div class="section-header">Team Online</div>
+      <div id="members-area">
+        <div class="member-row">
+          <div class="online-dot"></div>
+          <div class="avatar" id="self-avatar" style="background:#007acc;">?</div>
+          <div class="member-info">
+            <div class="member-name" id="self-name">You</div>
+            <div class="member-activity">Active now</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── BRAIN TAB ─── -->
+    <div id="tab-brain" class="tab-content">
+      <input type="text" class="search-box" placeholder="Search decisions..." id="decision-search" oninput="filterDecisions()">
+      <div id="decisions-timeline"></div>
+      <div id="decisions-empty" class="empty-state">
+        <div class="emoji">🧠</div>
+        <p>Your Team Brain is empty.</p>
+        <p style="font-size:0.8em;">Decisions will appear here as your team codes. Every file save is analyzed for architectural choices.</p>
+      </div>
+    </div>
+
+    <!-- ─── TEAM TAB ─── -->
+    <div id="tab-team" class="tab-content">
+      <div class="section-header">Members</div>
+      <div id="team-members-list"></div>
+
+      <div class="section-header" id="untouched-header" style="display:none;">Nobody has touched</div>
+      <div id="untouched-areas" style="display:none;"></div>
+    </div>
+
+    <!-- ─── INSIGHTS TAB ─── -->
+    <div id="tab-insights" class="tab-content">
+      <div id="insights-list"></div>
+      <div id="insights-empty" class="empty-state">
+        <div class="emoji">✨</div>
+        <p>All clear!</p>
+        <p style="font-size:0.8em;">Conflux watches for conflicts and gaps between teammates. Nothing to report right now.</p>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="sidebar-footer">
+      <span id="footer-stats">0 decisions · synced</span>
+      <button class="footer-btn" onclick="cmd('queryBrain')">Ask Brain 🧠</button>
+    </div>
+  </div>
+
+  <script>
+    // ─── VS Code API ───
+    const vscode = acquireVsCodeApi();
+    const state = vscode.getState() || { decisions: [], members: [], projectConfig: null, activeTab: 'home' };
+
+    function cmd(command, data) {
+      vscode.postMessage({ command, ...data });
+    }
+
+    // ─── Tab Switching ───
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        const target = tab.dataset.tab;
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById('tab-' + target).classList.add('active');
+        state.activeTab = target;
+        vscode.setState(state);
+      });
+    });
+
+    // ─── Avatar Color from Username ───
+    function avatarColor(name) {
+      const colors = ['#e53935','#8e24aa','#1e88e5','#00acc1','#43a047','#f4511e','#6d4c41','#546e7a','#d81b60','#3949ab'];
+      let hash = 0;
+      for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+      return colors[Math.abs(hash) % colors.length];
+    }
+
+    function avatarInitial(name) {
+      return (name || '?').charAt(0).toUpperCase();
+    }
+
+    // ─── Relative Timestamps ───
+    function timeAgo(iso) {
+      const now = Date.now();
+      const then = new Date(iso).getTime();
+      const diff = Math.floor((now - then) / 1000);
+      if (diff < 60) return 'just now';
+      if (diff < 3600) return Math.floor(diff / 60) + 'min ago';
+      if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+      return Math.floor(diff / 86400) + 'd ago';
+    }
+
+    function formatTime(iso) {
+      return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    // ─── Render Functions ───
+
+    function renderHome() {
+      const d = state.decisions || [];
+      const confirmed = d.filter(x => x.confidence === 'decided').length;
+      const pending = d.length - confirmed;
+
+      document.getElementById('stat-decisions').textContent = d.length;
+      document.getElementById('stat-confirmed').textContent = confirmed;
+      document.getElementById('stat-online').textContent = Math.max(1, (state.members || []).length);
+
+      const area = document.getElementById('last-decision-area');
+      if (d.length > 0) {
+        const latest = d[0]; // Already sorted newest-first
+        const badge = latest.confidence === 'decided' ? '✅' : '⏳';
+        const cls = latest.confidence === 'decided' ? '' : ' pending';
+        area.innerHTML = `
+          <div class="last-decision${cls}">
+            <div class="summary">${badge} ${esc(latest.summary)}</div>
+            <div class="meta">
+              <span>${esc(latest.author)}</span> · 
+              <span>${timeAgo(latest.timestamp)}</span> · 
+              <span class="decision-file" onclick="cmd('openFile', {path:'${esc(latest.filePath)}'})">📄 ${esc(latest.fileName)}</span>
+            </div>
+          </div>`;
+      } else {
+        area.innerHTML = `
+          <div class="empty-state">
+            <div class="emoji">🎯</div>
+            <p>No decisions yet — start coding!</p>
+            <p style="font-size:0.8em;">Conflux automatically captures architectural decisions from your code changes.</p>
+          </div>`;
+      }
+
+      renderMembersHome();
+      updateFooter();
+    }
+
+    function renderMembersHome() {
+      const membersArea = document.getElementById('members-area');
+      const members = state.members || [];
+      const selfName = state.projectConfig?.displayName || 'You';
+
+      let html = `
+        <div class="member-row">
+          <div class="online-dot"></div>
+          <div class="avatar" style="background:${avatarColor(selfName)};">${avatarInitial(selfName)}</div>
+          <div class="member-info">
+            <div class="member-name">${esc(selfName)} (you)</div>
+            <div class="member-activity">Active now</div>
+          </div>
+        </div>`;
+
+      members.forEach(m => {
+        const dot = m.isOnline ? '' : (m.isAway ? ' away' : ' offline');
+        const activity = m.isOnline ? (m.activeFile ? `→ ${esc(m.activeFile)}` : 'Active') : `last seen ${timeAgo(m.lastSeen)}`;
+        html += `
+          <div class="member-row">
+            <div class="online-dot${dot}"></div>
+            <div class="avatar" style="background:${avatarColor(m.name)};">${avatarInitial(m.name)}</div>
+            <div class="member-info">
+              <div class="member-name">${esc(m.name)}</div>
+              <div class="member-activity">${activity}</div>
+            </div>
+          </div>`;
+      });
+
+      membersArea.innerHTML = html;
+    }
+
+    function renderBrain() {
+      const timeline = document.getElementById('decisions-timeline');
+      const empty = document.getElementById('decisions-empty');
+      const d = state.decisions || [];
+
+      if (d.length === 0) {
+        timeline.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+      }
+      empty.style.display = 'none';
+
+      let html = '';
+      let lastDay = '';
+
+      d.forEach((dec, i) => {
+        const day = new Date(dec.timestamp).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+        if (day !== lastDay) {
+          const isToday = new Date(dec.timestamp).toDateString() === new Date().toDateString();
+          html += `<div class="day-separator">${isToday ? 'Today' : day}</div>`;
+          lastDay = day;
+        }
+
+        const badge = dec.confidence === 'decided' ? '✅' : '⏳';
+        const cls = dec.confidence === 'decided' ? '' : ' pending';
+        html += `
+          <div class="decision-card${cls}" onclick="toggleDecision(this)" data-index="${i}">
+            <div class="decision-header">
+              <span class="decision-badge">${badge}</span>
+              <span class="decision-time">${formatTime(dec.timestamp)}</span>
+              <span class="decision-author">${esc(dec.author)}</span>
+            </div>
+            <div class="decision-summary">${esc(dec.summary)}</div>
+            <div class="decision-file" onclick="event.stopPropagation(); cmd('openFile', {path:'${esc(dec.filePath)}'})">📄 ${esc(dec.fileName)}</div>
+            <div class="decision-details">
+              <div><strong>Confidence:</strong> ${dec.confidence === 'decided' ? 'Committed' : 'In progress — not committed yet'}</div>
+              <div><strong>Author:</strong> ${esc(dec.author)}</div>
+              <div><strong>When:</strong> ${new Date(dec.timestamp).toLocaleString()}</div>
+              <div><strong>File:</strong> ${esc(dec.filePath)}</div>
+            </div>
+          </div>`;
+      });
+
+      timeline.innerHTML = html;
+      updateBrainBadge();
+    }
+
+    function renderTeam() {
+      const list = document.getElementById('team-members-list');
+      const selfName = state.projectConfig?.displayName || 'You';
+      const d = state.decisions || [];
+      const members = state.members || [];
+
+      // Infer file ownership from decisions
+      const ownershipMap = {};
+      d.forEach(dec => {
+        const key = dec.author;
+        if (!ownershipMap[key]) ownershipMap[key] = new Set();
+        // Extract directory from file path
+        const parts = dec.fileName.split('/');
+        if (parts.length > 1) ownershipMap[key].add(parts[0]);
+        ownershipMap[key].add(dec.fileName);
+      });
+
+      // Build member cards
+      let html = '';
+      const allMembers = [{ name: selfName, isOnline: true, isSelf: true }, ...members];
+
+      allMembers.forEach(m => {
+        const owns = ownershipMap[m.name] ? Array.from(ownershipMap[m.name]).slice(0, 4).join(', ') : 'No files yet';
+        const decCount = d.filter(x => x.author === m.name).length;
+        const lastDec = d.find(x => x.author === m.name);
+        const activity = m.isOnline ? 'Active now' : (m.lastSeen ? `Last seen ${timeAgo(m.lastSeen)}` : 'Away');
+        const dot = m.isOnline ? '' : ' offline';
+
+        html += `
+          <div style="background:var(--vscode-editor-background,#252526); border-radius:6px; padding:10px 12px; margin-bottom:8px;">
+            <div class="member-row" style="padding:0;">
+              <div class="online-dot${dot}"></div>
+              <div class="avatar" style="background:${avatarColor(m.name)};">${avatarInitial(m.name)}</div>
+              <div class="member-info">
+                <div class="member-name">${esc(m.name)}${m.isSelf ? ' (you)' : ''}</div>
+                <div class="member-activity">${activity}</div>
+              </div>
+            </div>
+            <div style="font-size:0.8em;color:var(--vscode-descriptionForeground,#888);margin-top:6px;">
+              ${decCount} decisions · Files: ${esc(owns)}
+            </div>
+            ${lastDec ? `<div style="font-size:0.78em;color:var(--vscode-descriptionForeground,#666);margin-top:2px;">Last: "${esc(lastDec.summary.substring(0,50))}${lastDec.summary.length > 50 ? '...' : ''}"</div>` : ''}
+          </div>`;
+      });
+
+      list.innerHTML = html;
+    }
+
+    function renderInsights() {
+      const list = document.getElementById('insights-list');
+      const empty = document.getElementById('insights-empty');
+      const insights = state.insights || [];
+
+      if (insights.length === 0) {
+        list.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+      }
+      empty.style.display = 'none';
+
+      let html = '';
+      insights.forEach(ins => {
+        const cls = ins.type === 'warning' ? '' : ' info';
+        const icon = ins.type === 'warning' ? '⚠️' : 'ℹ️';
+        html += `
+          <div class="insight-card${cls}">
+            <div class="insight-title">${icon} ${esc(ins.title)}</div>
+            <div class="insight-body">${esc(ins.body)}</div>
+          </div>`;
+      });
+
+      list.innerHTML = html;
+      updateInsightsBadge();
+    }
+
+    // ─── Helpers ───
+
+    function esc(s) {
+      if (!s) return '';
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
+    function toggleDecision(card) {
+      card.classList.toggle('expanded');
+    }
+
+    function filterDecisions() {
+      const query = document.getElementById('decision-search').value.toLowerCase();
+      document.querySelectorAll('.decision-card').forEach(card => {
+        const text = card.textContent.toLowerCase();
+        card.style.display = text.includes(query) ? '' : 'none';
+      });
+    }
+
+    function updateBrainBadge() {
+      // Could track unread count here
+      const badge = document.getElementById('brain-badge');
+      const count = state.unreadDecisions || 0;
+      if (count > 0) {
+        badge.textContent = count;
+        badge.style.display = '';
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+
+    function updateInsightsBadge() {
+      const badge = document.getElementById('insights-badge');
+      const count = (state.insights || []).length;
+      if (count > 0) {
+        badge.textContent = count;
+        badge.style.display = '';
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+
+    function updateFooter() {
+      const d = state.decisions || [];
+      const syncStatus = state.syncActive ? 'synced' : 'local only';
+      document.getElementById('footer-stats').textContent = `${d.length} decisions · ${syncStatus}`;
+    }
+
+    function showMainUI(config) {
+      document.getElementById('welcome-screen').style.display = 'none';
+      document.getElementById('main-ui').style.display = '';
+
+      if (config) {
+        document.getElementById('project-name').textContent = config.projectDescription || 'Conflux';
+        document.getElementById('project-code-display').textContent = config.projectCode || '';
+        const selfName = config.displayName || 'You';
+        document.getElementById('self-name').textContent = selfName + ' (you)';
+        const selfAvatar = document.getElementById('self-avatar');
+        selfAvatar.textContent = avatarInitial(selfName);
+        selfAvatar.style.background = avatarColor(selfName);
+      }
+    }
+
+    function showWelcome() {
+      document.getElementById('welcome-screen').style.display = '';
+      document.getElementById('main-ui').style.display = 'none';
+    }
+
+    // ─── Message Handler ───
+    window.addEventListener('message', event => {
+      const msg = event.data;
+      switch (msg.type) {
+        case 'setProjectConfig':
+          state.projectConfig = msg.config;
+          showMainUI(msg.config);
+          vscode.setState(state);
+          break;
+
+        case 'setDecisions':
+          state.decisions = msg.decisions;
+          renderHome();
+          renderBrain();
+          renderTeam();
+          vscode.setState(state);
+          break;
+
+        case 'addDecision':
+          state.decisions = [msg.decision, ...(state.decisions || [])];
+          state.unreadDecisions = (state.unreadDecisions || 0) + 1;
+          renderHome();
+          renderBrain();
+          renderTeam();
+          vscode.setState(state);
+          break;
+
+        case 'setMembers':
+          state.members = msg.members;
+          renderHome();
+          renderTeam();
+          vscode.setState(state);
+          break;
+
+        case 'setSyncStatus':
+          state.syncActive = msg.active;
+          const dot = document.getElementById('connection-dot');
+          dot.className = msg.active ? 'status-dot' : 'status-dot offline';
+          updateFooter();
+          vscode.setState(state);
+          break;
+
+        case 'setInsights':
+          state.insights = msg.insights;
+          renderInsights();
+          vscode.setState(state);
+          break;
+
+        case 'showWelcome':
+          showWelcome();
+          break;
+
+        case 'navigateTab':
+          const tab = document.querySelector(`[data-tab="${msg.tab}"]`);
+          if (tab) tab.click();
+          break;
+      }
+    });
+
+    // ─── Restore State on Load ───
+    if (state.projectConfig) {
+      showMainUI(state.projectConfig);
+      renderHome();
+      renderBrain();
+      renderTeam();
+      renderInsights();
+      // Restore active tab
+      const savedTab = document.querySelector(`[data-tab="${state.activeTab || 'home'}"]`);
+      if (savedTab) savedTab.click();
+    }
+  </script>
+</body>
+</html>

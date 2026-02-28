@@ -1,0 +1,150 @@
+{
+  "name": "conflux-ai",
+  "displayName": "Conflux — Shared AI Team Memory",
+  "description": "Automatically extracts architectural decisions from code changes and shares them across your team's AI assistants. No context files. No Slack messages. No copy-paste. Just a file save.",
+  "version": "0.1.0",
+  "publisher": "ConfluxAI",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ssak-prods/conflux-ai"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "AI",
+    "team",
+    "memory",
+    "MCP",
+    "decisions",
+    "architecture",
+    "collaboration"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "conflux.queryMemory",
+        "title": "Conflux: Ask Team Brain",
+        "icon": "$(search)"
+      },
+      {
+        "command": "conflux.showStatus",
+        "title": "Conflux: Show Status"
+      },
+      {
+        "command": "conflux.startProject",
+        "title": "Conflux: Start a New Project",
+        "icon": "$(add)"
+      },
+      {
+        "command": "conflux.joinProject",
+        "title": "Conflux: Join Your Team",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "conflux.leaveProject",
+        "title": "Conflux: Leave Project Room"
+      },
+      {
+        "command": "conflux.refreshDecisions",
+        "title": "Conflux: Refresh Decisions",
+        "icon": "$(refresh)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "conflux-sidebar",
+          "title": "Conflux",
+          "icon": "media/sidebar-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "conflux-sidebar": [
+        {
+          "id": "conflux.decisions",
+          "name": "Conflux",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "conflux.refreshDecisions",
+          "when": "view == conflux.decisions",
+          "group": "navigation"
+        },
+        {
+          "command": "conflux.queryMemory",
+          "when": "view == conflux.decisions",
+          "group": "navigation"
+        }
+      ]
+    },
+    "viewsWelcome": [],
+    "configuration": {
+      "title": "Conflux",
+      "properties": {
+        "conflux.railwayUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Railway proxy URL (e.g. https://conflux-proxy.railway.app). Holds API keys server-side.",
+          "order": 1
+        },
+        "conflux.projectToken": {
+          "type": "string",
+          "default": "conflux-dev",
+          "description": "Project token for Railway proxy authentication.",
+          "order": 2
+        },
+        "conflux.groqApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Groq API key (fallback — only needed if Railway proxy is not configured).",
+          "order": 3
+        },
+        "conflux.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable or disable Conflux decision extraction.",
+          "order": 4
+        },
+        "conflux.debounceMs": {
+          "type": "number",
+          "default": 8000,
+          "description": "Debounce window in milliseconds before processing file changes.",
+          "order": 5
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "package": "npx vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@supabase/supabase-js": "^2.98.0",
+    "vectra": "^0.12.3"
+  }
+}

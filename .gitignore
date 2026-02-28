@@ -1,0 +1,14 @@
+confluxbackend.png
+node_modules/
+dist/
+.conflux/
+*.vsix
+.env
+.env.*
+out/
+.vscode/settings.json
+.gemini/
+.agent/
+ux_revamp_suggestions.md
+vscode-publishextension.md
+package-lock.json

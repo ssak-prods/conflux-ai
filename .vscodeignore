@@ -1,0 +1,17 @@
+confluxbackend.png
+.vscode/**
+src/**
+node_modules/**
+.gitignore
+.gemini/**
+.agent/**
+tsconfig.json
+**/*.ts
+**/*.map
+**/*.d.ts
+*.vsix
+package-lock.json
+ux_revamp_suggestions.md
+vscode-publishextension.md
+mcp-server/test_server.py
+mcp-server/__pycache__/**
