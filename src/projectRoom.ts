@@ -11,6 +11,8 @@
 
 import * as vscode from 'vscode';
 import * as os from 'os';
+import * as path from 'path';
+import * as fs from 'fs';
 import { SyncLayer, SyncConfig } from './syncLayer';
 
 // ─── Hardcoded Supabase credentials (anon/publishable key — safe to embed) ───
@@ -128,8 +130,8 @@ export class ProjectRoom implements vscode.Disposable {
             createdAt: new Date().toISOString(),
         };
 
-        // Save config
-        await context.workspaceState.update('conflux.projectConfig', config);
+        // Save config to disk
+        this.saveConfigToDisk(config);
 
         // Connect to Supabase
         const connected = await this.connectToRoom(config.projectCode);
@@ -191,8 +193,8 @@ export class ProjectRoom implements vscode.Disposable {
             createdAt: new Date().toISOString(),
         };
 
-        // Save config
-        await context.workspaceState.update('conflux.projectConfig', config);
+        // Save config to disk
+        this.saveConfigToDisk(config);
 
         // Connect
         const connected = await this.connectToRoom(code);
@@ -228,7 +230,7 @@ export class ProjectRoom implements vscode.Disposable {
      */
     private async leaveProject(context: vscode.ExtensionContext): Promise<void> {
         await this.syncLayer.disconnect();
-        await context.workspaceState.update('conflux.projectConfig', undefined);
+        this.deleteConfigFromDisk();
         this._onDidLeave.fire();
         vscode.window.showInformationMessage('Conflux: Left the project room.');
     }
@@ -237,7 +239,7 @@ export class ProjectRoom implements vscode.Disposable {
      * Auto-rejoin a project room if config exists from a previous session.
      */
     private async autoRejoin(context: vscode.ExtensionContext): Promise<void> {
-        const config = context.workspaceState.get<ProjectConfig>('conflux.projectConfig');
+        const config = this.loadConfigFromDisk();
         if (config && config.projectCode) {
             this.outputChannel.appendLine(
                 `[Conflux] Auto-rejoining project room: ${config.projectCode}`
@@ -253,7 +255,52 @@ export class ProjectRoom implements vscode.Disposable {
      * Get the current project config (if joined).
      */
     public getConfig(context: vscode.ExtensionContext): ProjectConfig | undefined {
-        return context.workspaceState.get<ProjectConfig>('conflux.projectConfig');
+        return this.loadConfigFromDisk() || undefined;
+    }
+
+    // ─── On-disk config persistence ───
+
+    private getConfigPath(): string | null {
+        const folders = vscode.workspace.workspaceFolders;
+        if (!folders || folders.length === 0) { return null; }
+        return path.join(folders[0].uri.fsPath, '.conflux', 'project.json');
+    }
+
+    private saveConfigToDisk(config: ProjectConfig): void {
+        const configPath = this.getConfigPath();
+        if (!configPath) { return; }
+        try {
+            const dir = path.dirname(configPath);
+            if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
+            fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+            this.outputChannel.appendLine(`[Conflux] Project config saved to ${configPath}`);
+        } catch (err: any) {
+            this.outputChannel.appendLine(`[Conflux] Failed to save config: ${err.message}`);
+        }
+    }
+
+    private loadConfigFromDisk(): ProjectConfig | null {
+        const configPath = this.getConfigPath();
+        if (!configPath) { return null; }
+        try {
+            if (fs.existsSync(configPath)) {
+                const raw = fs.readFileSync(configPath, 'utf-8');
+                return JSON.parse(raw) as ProjectConfig;
+            }
+        } catch (err: any) {
+            this.outputChannel.appendLine(`[Conflux] Failed to read config: ${err.message}`);
+        }
+        return null;
+    }
+
+    private deleteConfigFromDisk(): void {
+        const configPath = this.getConfigPath();
+        if (!configPath) { return; }
+        try {
+            if (fs.existsSync(configPath)) {
+                fs.unlinkSync(configPath);
+            }
+        } catch { }
     }
 
     /**

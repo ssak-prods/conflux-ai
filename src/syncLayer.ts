@@ -22,6 +22,11 @@ export interface SyncConfig {
     projectCode: string;
 }
 
+export interface TeamMember {
+    name: string;
+    lastSeen: number;
+}
+
 export class SyncLayer implements vscode.Disposable {
     private supabase: SupabaseClient | null = null;
     private channel: RealtimeChannel | null = null;
@@ -31,6 +36,13 @@ export class SyncLayer implements vscode.Disposable {
     private outgoingQueue: Decision[] = [];
     private isConnected: boolean = false;
 
+    // ─── Presence ───
+    private presenceInterval: ReturnType<typeof setInterval> | null = null;
+    private cleanupInterval: ReturnType<typeof setInterval> | null = null;
+    private members: Map<string, number> = new Map(); // name → lastSeen timestamp
+    private myName: string = '';
+    private presenceListeners: Array<(members: TeamMember[]) => void> = [];
+
     constructor(vectorStore: VectorStore, outputChannel: vscode.OutputChannel) {
         this.vectorStore = vectorStore;
         this.outputChannel = outputChannel;
@@ -38,7 +50,6 @@ export class SyncLayer implements vscode.Disposable {
 
     /**
      * Connect to the sync channel.
-     * Call this after the user joins a project room.
      */
     public async connect(config: SyncConfig): Promise<boolean> {
         this.config = config;
@@ -49,27 +60,31 @@ export class SyncLayer implements vscode.Disposable {
         }
 
         try {
-            // Initialize Supabase client
             this.supabase = createClient(config.supabaseUrl, config.supabaseAnonKey);
 
-            // Subscribe to the project's broadcast channel
             const channelName = `conflux:${config.projectCode}`;
             this.channel = this.supabase.channel(channelName);
 
-            // Listen for incoming decisions
+            // Listen for decisions
             this.channel.on('broadcast', { event: 'decision' }, (payload) => {
                 this.handleIncomingDecision(payload.payload as Decision);
             });
 
-            // Subscribe to the channel
+            // Listen for presence heartbeats
+            this.channel.on('broadcast', { event: 'presence' }, (payload) => {
+                const name = payload.payload?.name;
+                if (name && name !== this.myName) {
+                    this.members.set(name, Date.now());
+                    this.emitPresence();
+                }
+            });
+
             this.channel.subscribe((status) => {
                 if (status === 'SUBSCRIBED') {
                     this.isConnected = true;
                     this.outputChannel.appendLine(
                         `[Conflux Sync] Connected to project room: ${config.projectCode}`
                     );
-
-                    // Flush queued outgoing decisions
                     this.flushQueue();
                 } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
                     this.isConnected = false;
@@ -86,17 +101,92 @@ export class SyncLayer implements vscode.Disposable {
         }
     }
 
+    // ─── Presence Heartbeat ───
+
     /**
-     * Broadcast a new decision to all teammates.
-     * If offline, queues the decision for later.
+     * Start sending presence heartbeats every 15 seconds.
+     * Also starts a cleanup timer to remove stale members after 45 seconds.
      */
+    public startPresence(name: string): void {
+        this.myName = name;
+        this.members.set(name, Date.now()); // Add self
+        this.emitPresence();
+
+        // Send heartbeat immediately, then every 15s
+        this.sendPresenceBeat();
+        this.presenceInterval = setInterval(() => this.sendPresenceBeat(), 15_000);
+
+        // Clean up stale members every 20s
+        this.cleanupInterval = setInterval(() => this.cleanupStaleMembers(), 20_000);
+
+        this.outputChannel.appendLine(`[Conflux Sync] Presence started for "${name}"`);
+    }
+
+    /**
+     * Stop sending presence heartbeats.
+     */
+    public stopPresence(): void {
+        if (this.presenceInterval) {
+            clearInterval(this.presenceInterval);
+            this.presenceInterval = null;
+        }
+        if (this.cleanupInterval) {
+            clearInterval(this.cleanupInterval);
+            this.cleanupInterval = null;
+        }
+        this.members.clear();
+        this.emitPresence();
+    }
+
+    /**
+     * Register a callback for presence updates.
+     */
+    public onPresenceUpdate(listener: (members: TeamMember[]) => void): void {
+        this.presenceListeners.push(listener);
+    }
+
+    private sendPresenceBeat(): void {
+        if (!this.channel || !this.isConnected || !this.myName) { return; }
+        this.channel.send({
+            type: 'broadcast',
+            event: 'presence',
+            payload: { name: this.myName, ts: Date.now() },
+        }).catch(() => { });
+
+        // Keep self alive
+        this.members.set(this.myName, Date.now());
+    }
+
+    private cleanupStaleMembers(): void {
+        const now = Date.now();
+        const STALE_MS = 45_000; // 45 seconds
+        let changed = false;
+        for (const [name, lastSeen] of this.members) {
+            if (name !== this.myName && now - lastSeen > STALE_MS) {
+                this.members.delete(name);
+                this.outputChannel.appendLine(`[Conflux Sync] Member "${name}" went offline`);
+                changed = true;
+            }
+        }
+        if (changed) { this.emitPresence(); }
+    }
+
+    private emitPresence(): void {
+        const list: TeamMember[] = [];
+        for (const [name, lastSeen] of this.members) {
+            list.push({ name, lastSeen });
+        }
+        for (const listener of this.presenceListeners) {
+            try { listener(list); } catch { }
+        }
+    }
+
+    // ─── Decision Broadcasting ───
+
     public async broadcastDecision(decision: Decision): Promise<void> {
         if (!this.channel || !this.isConnected) {
-            // Offline-first: queue for later
             this.outgoingQueue.push(decision);
-            this.outputChannel.appendLine(
-                '[Conflux Sync] Queued decision for sync (offline)'
-            );
+            this.outputChannel.appendLine('[Conflux Sync] Queued decision for sync (offline)');
             return;
         }
 
@@ -111,29 +201,20 @@ export class SyncLayer implements vscode.Disposable {
                 `[Conflux Sync] Broadcast decision: "${decision.summary.substring(0, 50)}..."`
             );
         } catch (error) {
-            // Queue on failure
             this.outgoingQueue.push(decision);
             this.outputChannel.appendLine(`[Conflux Sync] Broadcast failed, queued: ${error}`);
         }
     }
 
-    /**
-     * Handle an incoming decision from a teammate.
-     * Upserts into local Vectra store (deduplication handled by VectorStore).
-     */
     private async handleIncomingDecision(decision: Decision): Promise<void> {
-        if (!decision || !decision.summary) {
-            return;
-        }
+        if (!decision || !decision.summary) { return; }
 
         this.outputChannel.appendLine(
             `[Conflux Sync] Received decision from ${decision.author}: "${decision.summary.substring(0, 50)}..."`
         );
 
-        // Upsert into local vector store (deduplicates by similarity score)
         const stored = await this.vectorStore.upsertDecision(decision);
         if (stored) {
-            // Show a notification about the incoming decision
             vscode.window.setStatusBarMessage(
                 `$(cloud-download) Conflux: Team decision from ${decision.author}`,
                 5000
@@ -141,13 +222,8 @@ export class SyncLayer implements vscode.Disposable {
         }
     }
 
-    /**
-     * Flush queued outgoing decisions (called on reconnect).
-     */
     private async flushQueue(): Promise<void> {
-        if (this.outgoingQueue.length === 0) {
-            return;
-        }
+        if (this.outgoingQueue.length === 0) { return; }
 
         this.outputChannel.appendLine(
             `[Conflux Sync] Flushing ${this.outgoingQueue.length} queued decisions...`
@@ -161,10 +237,8 @@ export class SyncLayer implements vscode.Disposable {
         }
     }
 
-    /**
-     * Disconnect from the sync channel.
-     */
     public async disconnect(): Promise<void> {
+        this.stopPresence();
         if (this.channel) {
             await this.supabase?.removeChannel(this.channel);
             this.channel = null;
@@ -173,9 +247,6 @@ export class SyncLayer implements vscode.Disposable {
         this.supabase = null;
     }
 
-    /**
-     * Check if currently connected to a project room.
-     */
     public isActive(): boolean {
         return this.isConnected && this.channel !== null;
     }

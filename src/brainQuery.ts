@@ -1,23 +1,15 @@
 /**
- * BrainQuery — AMD/Groq 70B powered conversational query over the team knowledge graph.
+ * BrainQuery — AMD/Groq 70B powered conversational query over team memory.
  *
- * Instead of vector similarity search (which breaks when embedding is unavailable),
- * this sends all stored decisions as context to a 70B model via Railway /reason.
- *
- * Handles questions like:
- *   "Where are we in the project?"
- *   "What authentication method did we choose?"
- *   "What's left to build?"
- *   "Are there any unresolved architectural decisions?"
- *
- * Route: extension → Railway /reason → AMD MI300X (70B) → answer
- * Fallback: Railway → Groq 70B if AMD not configured
+ * Uses Node.js https module (NOT fetch — Electron doesn't support it).
  */
 
 import * as vscode from 'vscode';
 import * as https from 'https';
 import * as http from 'http';
 import { Decision } from './vectorStore';
+
+const DEFAULT_RAILWAY_URL = 'https://forconflux-production.up.railway.app';
 
 const BRAIN_SYSTEM_PROMPT = `You are the Conflux Team Brain — an AI that knows everything about a software project because you've been watching the team code it in real time.
 
@@ -34,8 +26,8 @@ Rules:
 - Use the confidence tags: ✅ = committed to git, ⏳ = in progress / not yet committed`;
 
 export class BrainQuery implements vscode.Disposable {
-    private railwayUrl: string = '';
-    private projectToken: string = '';
+    private railwayUrl: string = DEFAULT_RAILWAY_URL;
+    private projectToken: string = 'conflux-dev';
     private groqApiKey: string = '';
     private disposables: vscode.Disposable[] = [];
     private outputChannel: vscode.OutputChannel;
@@ -43,7 +35,6 @@ export class BrainQuery implements vscode.Disposable {
     constructor(outputChannel: vscode.OutputChannel) {
         this.outputChannel = outputChannel;
         this.loadConfig();
-
         this.disposables.push(
             vscode.workspace.onDidChangeConfiguration(() => this.loadConfig())
         );
@@ -51,7 +42,7 @@ export class BrainQuery implements vscode.Disposable {
 
     private loadConfig(): void {
         const config = vscode.workspace.getConfiguration('conflux');
-        this.railwayUrl = config.get<string>('railwayUrl', '');
+        this.railwayUrl = config.get<string>('railwayUrl', '') || DEFAULT_RAILWAY_URL;
         this.projectToken = config.get<string>('projectToken', 'conflux-dev');
         this.groqApiKey = config.get<string>('groqApiKey', '');
     }
@@ -60,16 +51,13 @@ export class BrainQuery implements vscode.Disposable {
         return this.railwayUrl.length > 0 || this.groqApiKey.length > 0;
     }
 
-    /**
-     * Ask the 70B model a question about the project.
-     * Sends all decisions as context, gets a conversational answer.
-     */
     public async ask(question: string, decisions: Decision[]): Promise<string> {
+        this.log(`ask() called. ${decisions.length} decisions, railwayUrl=${this.railwayUrl ? 'set' : 'empty'}`);
+
         if (decisions.length === 0) {
             return "No team decisions recorded yet. Start coding — Conflux will automatically extract decisions from your code changes.";
         }
 
-        // Build the context block from all decisions (most recent first, max 80)
         const decisionContext = decisions
             .slice(0, 80)
             .map((d, i) => {
@@ -83,126 +71,129 @@ export class BrainQuery implements vscode.Disposable {
 
         try {
             if (this.railwayUrl) {
-                const result = await this.callRailwayReason(userMessage);
-                if (result) {
-                    return result;
+                this.log('Calling Railway /reason...');
+                const result = await this.httpPost(
+                    this.railwayUrl.replace(/\/$/, '') + '/reason',
+                    {
+                        messages: [
+                            { role: 'system', content: BRAIN_SYSTEM_PROMPT },
+                            { role: 'user', content: userMessage },
+                        ],
+                        temperature: 0.4,
+                        max_tokens: 600,
+                    },
+                    { 'X-Project-Token': this.projectToken },
+                    45000,
+                );
+
+                if (result && result.choices?.[0]?.message?.content) {
+                    return result.choices[0].message.content.trim();
                 }
-                // Fall through to Groq direct
+                this.log('Railway /reason failed or empty. Trying Groq...');
             }
 
             if (this.groqApiKey) {
-                const result = await this.callGroqDirect(userMessage);
-                if (result) {
-                    return result;
+                const result = await this.httpPost(
+                    'https://api.groq.com/openai/v1/chat/completions',
+                    {
+                        model: 'llama-3.3-70b-versatile',
+                        messages: [
+                            { role: 'system', content: BRAIN_SYSTEM_PROMPT },
+                            { role: 'user', content: userMessage },
+                        ],
+                        temperature: 0.4,
+                        max_tokens: 600,
+                    },
+                    { 'Authorization': `Bearer ${this.groqApiKey}` },
+                    30000,
+                );
+
+                if (result && result.choices?.[0]?.message?.content) {
+                    return result.choices[0].message.content.trim();
                 }
             }
 
-            return "Could not reach AI backend. Check your Railway URL or Groq API key in settings.";
+            return "Could not reach AI backend. Please check View → Output → Conflux for details.";
         } catch (error) {
-            this.outputChannel.appendLine(`[Conflux] BrainQuery failed: ${error}`);
+            this.log(`BrainQuery error: ${error}`);
             return "Query failed — check the Conflux output channel for details.";
         }
     }
 
-    private callRailwayReason(userMessage: string): Promise<string | null> {
+    /**
+     * Reliable HTTP POST using Node.js https module.
+     */
+    private httpPost(urlStr: string, body: any, extraHeaders: Record<string, string>, timeoutMs: number): Promise<any> {
         return new Promise((resolve) => {
-            const payload = JSON.stringify({
-                messages: [
-                    { role: 'system', content: BRAIN_SYSTEM_PROMPT },
-                    { role: 'user', content: userMessage },
-                ],
-                temperature: 0.4,
-                max_tokens: 600,
-            });
+            try {
+                const url = new URL(urlStr);
+                const payload = JSON.stringify(body);
+                const isHttps = url.protocol === 'https:';
+                const mod = isHttps ? https : http;
 
-            const url = new URL(`${this.railwayUrl.replace(/\/$/, '')}/reason`);
-            const isHttps = url.protocol === 'https:';
-            const httpModule = isHttps ? https : http;
+                const options: https.RequestOptions = {
+                    hostname: url.hostname,
+                    port: url.port || (isHttps ? 443 : 80),
+                    path: url.pathname + url.search,
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Content-Length': Buffer.byteLength(payload),
+                        ...extraHeaders,
+                    },
+                };
 
-            const options: https.RequestOptions = {
-                hostname: url.hostname,
-                port: url.port || (isHttps ? 443 : 80),
-                path: url.pathname,
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Project-Token': this.projectToken,
-                    'Content-Length': Buffer.byteLength(payload),
-                },
-                timeout: 30000,
-            };
+                this.log(`POST ${url.hostname}${url.pathname} (${payload.length} bytes, timeout ${timeoutMs}ms)`);
 
-            const req = httpModule.request(options, (res) => {
-                let data = '';
-                res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
-                res.on('end', () => {
-                    try {
-                        const json = JSON.parse(data);
-                        const content = json.choices?.[0]?.message?.content;
-                        resolve(content ? content.trim() : null);
-                    } catch {
-                        resolve(null);
-                    }
+                const timer = setTimeout(() => {
+                    this.log(`TIMEOUT ${url.hostname}${url.pathname} after ${timeoutMs}ms`);
+                    req.destroy();
+                    resolve(null);
+                }, timeoutMs);
+
+                const req = mod.request(options, (res) => {
+                    let data = '';
+                    res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+                    res.on('end', () => {
+                        clearTimeout(timer);
+                        this.log(`Response ${res.statusCode} from ${url.hostname} (${data.length} bytes)`);
+                        try {
+                            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+                                resolve(JSON.parse(data));
+                            } else {
+                                this.log(`HTTP ERROR ${res.statusCode}: ${data.substring(0, 300)}`);
+                                resolve(null);
+                            }
+                        } catch (e) {
+                            this.log(`JSON parse error: ${e}`);
+                            resolve(null);
+                        }
+                    });
                 });
-            });
 
-            req.on('error', () => resolve(null));
-            req.on('timeout', () => { req.destroy(); resolve(null); });
-            req.write(payload);
-            req.end();
+                req.on('error', (err) => {
+                    clearTimeout(timer);
+                    this.log(`REQUEST ERROR ${url.hostname}: ${err.message}`);
+                    resolve(null);
+                });
+
+                req.write(payload);
+                req.end();
+            } catch (err: any) {
+                this.log(`httpPost setup error: ${err.message}`);
+                resolve(null);
+            }
         });
     }
 
-    private callGroqDirect(userMessage: string): Promise<string | null> {
-        return new Promise((resolve) => {
-            const payload = JSON.stringify({
-                model: 'llama-3.3-70b-versatile',
-                messages: [
-                    { role: 'system', content: BRAIN_SYSTEM_PROMPT },
-                    { role: 'user', content: userMessage },
-                ],
-                temperature: 0.4,
-                max_tokens: 600,
-            });
-
-            const options: https.RequestOptions = {
-                hostname: 'api.groq.com',
-                port: 443,
-                path: '/openai/v1/chat/completions',
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${this.groqApiKey}`,
-                    'Content-Length': Buffer.byteLength(payload),
-                },
-                timeout: 25000,
-            };
-
-            const req = https.request(options, (res) => {
-                let data = '';
-                res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
-                res.on('end', () => {
-                    try {
-                        const json = JSON.parse(data);
-                        const content = json.choices?.[0]?.message?.content;
-                        resolve(content ? content.trim() : null);
-                    } catch {
-                        resolve(null);
-                    }
-                });
-            });
-
-            req.on('error', () => resolve(null));
-            req.on('timeout', () => { req.destroy(); resolve(null); });
-            req.write(payload);
-            req.end();
-        });
+    private log(msg: string): void {
+        const line = `[Conflux Brain] ${msg}`;
+        console.log(line);
+        this.outputChannel?.appendLine(line);
     }
 
     public dispose(): void {
-        for (const d of this.disposables) {
-            d.dispose();
-        }
+        for (const d of this.disposables) { d.dispose(); }
         this.disposables = [];
     }
 }

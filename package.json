@@ -2,7 +2,7 @@
   "name": "conflux-ai",
   "displayName": "Conflux — Shared AI Team Memory",
   "description": "Automatically extracts architectural decisions from code changes and shares them across your team's AI assistants. No context files. No Slack messages. No copy-paste. Just a file save.",
-  "version": "0.1.0",
+  "version": "0.1.11",
   "publisher": "ConfluxAI",
   "icon": "media/icon.png",
   "repository": {
@@ -99,9 +99,9 @@
       "properties": {
         "conflux.railwayUrl": {
           "type": "string",
-          "default": "",
-          "description": "Railway proxy URL (e.g. https://conflux-proxy.railway.app). Holds API keys server-side.",
-          "order": 1
+          "default": "https://forconflux-production.up.railway.app",
+          "description": "Railway proxy URL (handles AI calls server-side). Pre-configured — no change needed.",
+          "order": 10
         },
         "conflux.projectToken": {
           "type": "string",
@@ -131,15 +131,17 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.config.mjs",
+    "compile": "tsc -p ./ --noEmit",
+    "watch": "node esbuild.config.mjs --watch",
     "lint": "eslint src --ext ts",
-    "package": "npx vsce package --no-dependencies"
+    "package": "npx @vscode/vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "esbuild": "^0.27.3",
     "typescript": "^5.3.3"
   },
   "dependencies": {

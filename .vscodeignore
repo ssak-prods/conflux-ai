@@ -6,6 +6,7 @@ node_modules/**
 .gemini/**
 .agent/**
 tsconfig.json
+esbuild.config.mjs
 **/*.ts
 **/*.map
 **/*.d.ts

@@ -1,19 +1,13 @@
 /**
  * LLM Summarizer — Routes LLM calls through the Railway proxy.
  *
- * The Railway proxy holds all API keys server-side.
- * Extension authenticates with a project token only.
- *
- * Two endpoints:
- *   POST /summarize → Groq (8B, fast) — for diff summaries
- *   POST /reason   → AMD MI300X (70B) — for conflict checks (future)
- *
- * Fallback: If Railway URL is not configured, falls back to direct Groq API.
+ * Uses child_process.execFile to spawn a Node.js subprocess for HTTP calls.
+ * This completely bypasses Electron's runtime quirks with https/http modules.
+ * The subprocess runs plain Node.js — no Electron interference.
  */
 
 import * as vscode from 'vscode';
-import * as https from 'https';
-import * as http from 'http';
+import * as cp from 'child_process';
 
 export interface SummarizationResult {
     summary: string;
@@ -41,16 +35,18 @@ Examples of bad outputs (too vague or describing code not intent):
 - "Adds a new function called handleLogin." (describes code, not intent)
 - "Changes some imports." (trivial)`;
 
+const DEFAULT_RAILWAY_URL = 'https://forconflux-production.up.railway.app';
+
 export class LlmSummarizer implements vscode.Disposable {
     private groqApiKey: string = '';
-    private railwayUrl: string = '';
-    private projectToken: string = '';
+    private railwayUrl: string = DEFAULT_RAILWAY_URL;
+    private projectToken: string = 'conflux-dev';
     private disposables: vscode.Disposable[] = [];
+    private outputChannel?: vscode.OutputChannel;
 
-    constructor() {
+    constructor(outputChannel?: vscode.OutputChannel) {
+        this.outputChannel = outputChannel;
         this.loadConfig();
-
-        // Watch for config changes
         this.disposables.push(
             vscode.workspace.onDidChangeConfiguration((e) => {
                 if (
@@ -67,198 +63,201 @@ export class LlmSummarizer implements vscode.Disposable {
     private loadConfig(): void {
         const config = vscode.workspace.getConfiguration('conflux');
         this.groqApiKey = config.get<string>('groqApiKey', '');
-        this.railwayUrl = config.get<string>('railwayUrl', '');
+        this.railwayUrl = config.get<string>('railwayUrl', '') || DEFAULT_RAILWAY_URL;
         this.projectToken = config.get<string>('projectToken', 'conflux-dev');
+        this.log(`Config loaded: railwayUrl=${this.railwayUrl}, groqKey=${this.groqApiKey ? 'set' : 'empty'}`);
     }
 
-    /**
-     * Check if the summarizer is configured.
-     * Either Railway URL or direct Groq API key must be set.
-     */
     public isConfigured(): boolean {
         return this.railwayUrl.length > 0 || this.groqApiKey.length > 0;
     }
 
-    /**
-     * Summarize a code diff into a one-sentence architectural decision.
-     * Routes through Railway if configured, falls back to direct Groq.
-     */
     public async summarize(
         diff: string,
         fileName: string,
         languageId: string
     ): Promise<SummarizationResult | null> {
         if (!this.isConfigured()) {
+            this.log('Not configured — skipping');
             return null;
         }
 
-        const userPrompt = `File: ${fileName} (${languageId})
-
-Code diff:
-\`\`\`
-${diff.substring(0, 3000)}
-\`\`\`
-
-What is the ONE architectural decision or design intent behind this change?`;
+        const userPrompt = `File: ${fileName} (${languageId})\n\nCode diff:\n\`\`\`\n${diff.substring(0, 3000)}\n\`\`\`\n\nWhat is the ONE architectural decision or design intent behind this change?`;
 
         try {
-            // Try Railway proxy first (fast timeout so failure doesn't block)
+            // Try Railway first
             if (this.railwayUrl) {
-                const railwayResult = await this.callRailway(userPrompt);
-                if (railwayResult && railwayResult.summary !== 'SKIP' && railwayResult.summary.trim() !== '') {
-                    return railwayResult;
-                }
-                // Railway failed or returned SKIP — fall through to Groq
-            }
+                this.log(`Calling Railway /summarize...`);
+                const result = await this.nodeHttpPost(
+                    this.railwayUrl.replace(/\/$/, '') + '/summarize',
+                    {
+                        messages: [
+                            { role: 'system', content: SYSTEM_PROMPT },
+                            { role: 'user', content: userPrompt },
+                        ],
+                        temperature: 0.3,
+                        max_tokens: 150,
+                    },
+                    { 'X-Project-Token': this.projectToken },
+                    20000,
+                );
 
-            // Groq direct fallback
-            if (this.groqApiKey) {
-                const groqResult = await this.callGroqDirect(userPrompt);
-                if (!groqResult || groqResult.summary === 'SKIP' || groqResult.summary.trim() === '') {
+                if (result && result.choices?.[0]) {
+                    const summary = result.choices[0].message.content.trim();
+                    if (summary && summary !== 'SKIP') {
+                        this.log(`Decision extracted: "${summary}"`);
+                        return {
+                            summary,
+                            model: result.model || 'railway',
+                            tokensUsed: result.usage?.total_tokens ?? 0,
+                        };
+                    }
+                    this.log(`LLM returned SKIP or empty`);
                     return null;
                 }
-                return groqResult;
+                this.log('Railway returned no result, trying Groq fallback...');
             }
 
+            // Fallback: Direct Groq
+            if (this.groqApiKey) {
+                this.log('Calling Groq direct...');
+                const result = await this.nodeHttpPost(
+                    'https://api.groq.com/openai/v1/chat/completions',
+                    {
+                        model: 'llama-3.1-8b-instant',
+                        messages: [
+                            { role: 'system', content: SYSTEM_PROMPT },
+                            { role: 'user', content: userPrompt },
+                        ],
+                        temperature: 0.3,
+                        max_tokens: 150,
+                    },
+                    { 'Authorization': `Bearer ${this.groqApiKey}` },
+                    25000,
+                );
+
+                if (result && result.choices?.[0]) {
+                    const summary = result.choices[0].message.content.trim();
+                    if (summary && summary !== 'SKIP') {
+                        return { summary, model: result.model || 'groq', tokensUsed: result.usage?.total_tokens ?? 0 };
+                    }
+                }
+            }
+
+            this.log('All LLM backends exhausted — returning null');
             return null;
         } catch (error) {
-            // Fail silently — never surface errors to the developer's editor
-            console.error('[Conflux] LLM summarization failed silently:', error);
+            this.log(`Summarization error: ${error}`);
             return null;
         }
     }
 
     /**
-     * Call the Railway proxy /summarize endpoint.
-     * Railway holds the API keys — we just send the project token.
+     * Spawns a child Node.js process to make the HTTP POST.
+     * This COMPLETELY bypasses Electron's runtime — the child process
+     * is a fresh Node.js instance with no Electron interference.
+     *
+     * The script is passed as a -e argument, receives the request body
+     * via stdin, and returns the response JSON via stdout.
      */
-    private callRailway(userMessage: string): Promise<SummarizationResult | null> {
+    private nodeHttpPost(
+        urlStr: string,
+        body: any,
+        extraHeaders: Record<string, string>,
+        timeoutMs: number
+    ): Promise<any> {
         return new Promise((resolve) => {
-            const payload = JSON.stringify({
-                messages: [
-                    { role: 'system', content: SYSTEM_PROMPT },
-                    { role: 'user', content: userMessage },
-                ],
-                temperature: 0.3,
-                max_tokens: 150,
-            });
+            const payload = JSON.stringify(body);
 
-            const url = new URL(`${this.railwayUrl.replace(/\/$/, '')}/summarize`);
-            const isHttps = url.protocol === 'https:';
-            const httpModule = isHttps ? https : http;
+            // Inline Node.js script that makes the HTTPS request
+            const script = `
+const https = require('https');
+const http = require('http');
+const url = new URL(process.argv[1]);
+const headers = JSON.parse(process.argv[2]);
+let input = '';
+process.stdin.on('data', c => input += c);
+process.stdin.on('end', () => {
+    const mod = url.protocol === 'https:' ? https : http;
+    const req = mod.request({
+        hostname: url.hostname,
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
+        path: url.pathname + url.search,
+        method: 'POST',
+        timeout: ${Math.floor(timeoutMs * 0.8)},
+        headers: Object.assign({ 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(input) }, headers)
+    }, (res) => {
+        let d = '';
+        res.on('data', c => d += c);
+        res.on('end', () => {
+            process.stdout.write(JSON.stringify({ status: res.statusCode, body: d }));
+        });
+    });
+    req.on('timeout', () => { req.destroy(); process.stdout.write(JSON.stringify({ status: 0, body: 'timeout' })); });
+    req.on('error', (e) => { process.stdout.write(JSON.stringify({ status: 0, body: e.message })); });
+    req.write(input);
+    req.end();
+});
+`;
 
-            const options: https.RequestOptions = {
-                hostname: url.hostname,
-                port: url.port || (isHttps ? 443 : 80),
-                path: url.pathname,
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Project-Token': this.projectToken,
-                    'Content-Length': Buffer.byteLength(payload),
-                },
-                timeout: 5000,  // Fail fast so Groq fallback kicks in quickly
-            };
+            this.log(`Spawning Node.js subprocess for ${urlStr}`);
 
-            const req = httpModule.request(options, (res) => {
-                let data = '';
-                res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
-                res.on('end', () => {
-                    try {
-                        const json = JSON.parse(data);
-                        if (json.error) {
-                            console.error('[Conflux] Railway error:', json.error);
+            try {
+                const child = cp.execFile(
+                    process.execPath, // Use the same Node.js binary that VS Code uses
+                    ['-e', script, urlStr, JSON.stringify(extraHeaders)],
+                    {
+                        timeout: timeoutMs,
+                        maxBuffer: 1024 * 1024, // 1MB
+                        env: { ...process.env }, // Inherit env
+                    },
+                    (error, stdout, stderr) => {
+                        if (error) {
+                            this.log(`Subprocess error: ${error.message}`);
+                            if (stderr) { this.log(`Subprocess stderr: ${stderr}`); }
                             resolve(null);
                             return;
                         }
-                        const choice = json.choices?.[0];
-                        if (!choice) {
+
+                        try {
+                            const result = JSON.parse(stdout);
+                            this.log(`Subprocess response: status=${result.status}, body=${String(result.body).substring(0, 200)}`);
+
+                            if (result.status >= 200 && result.status < 300) {
+                                resolve(JSON.parse(result.body));
+                            } else {
+                                this.log(`HTTP error ${result.status}: ${String(result.body).substring(0, 500)}`);
+                                resolve(null);
+                            }
+                        } catch (e) {
+                            this.log(`Subprocess output parse error: ${e}, stdout=${stdout.substring(0, 200)}`);
                             resolve(null);
-                            return;
                         }
-                        resolve({
-                            summary: choice.message.content.trim(),
-                            model: json.model || 'railway-proxy',
-                            tokensUsed: json.usage?.total_tokens ?? 0,
-                        });
-                    } catch {
-                        resolve(null);
                     }
-                });
-            });
+                );
 
-            req.on('error', () => resolve(null));
-            req.on('timeout', () => { req.destroy(); resolve(null); });
-            req.write(payload);
-            req.end();
+                // Send the request body via stdin
+                if (child.stdin) {
+                    child.stdin.write(payload);
+                    child.stdin.end();
+                }
+            } catch (err: any) {
+                this.log(`Failed to spawn subprocess: ${err.message}`);
+                resolve(null);
+            }
         });
     }
 
-    /**
-     * Direct Groq API fallback (when Railway is not configured).
-     */
-    private callGroqDirect(userMessage: string): Promise<SummarizationResult | null> {
-        return new Promise((resolve) => {
-            const payload = JSON.stringify({
-                model: 'llama-3.1-8b-instant',
-                messages: [
-                    { role: 'system', content: SYSTEM_PROMPT },
-                    { role: 'user', content: userMessage },
-                ],
-                temperature: 0.3,
-                max_tokens: 150,
-            });
-
-            const options: https.RequestOptions = {
-                hostname: 'api.groq.com',
-                port: 443,
-                path: '/openai/v1/chat/completions',
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${this.groqApiKey}`,
-                    'Content-Length': Buffer.byteLength(payload),
-                },
-                timeout: 15000,
-            };
-
-            const req = https.request(options, (res) => {
-                let data = '';
-                res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
-                res.on('end', () => {
-                    try {
-                        const json = JSON.parse(data);
-                        if (json.error) {
-                            resolve(null);
-                            return;
-                        }
-                        const choice = json.choices?.[0];
-                        if (!choice) {
-                            resolve(null);
-                            return;
-                        }
-                        resolve({
-                            summary: choice.message.content.trim(),
-                            model: json.model || 'llama-3.1-8b-instant',
-                            tokensUsed: json.usage?.total_tokens ?? 0,
-                        });
-                    } catch {
-                        resolve(null);
-                    }
-                });
-            });
-
-            req.on('error', () => resolve(null));
-            req.on('timeout', () => { req.destroy(); resolve(null); });
-            req.write(payload);
-            req.end();
-        });
+    private log(msg: string): void {
+        const line = `[Conflux LLM] ${msg}`;
+        console.log(line);
+        if (this.outputChannel) {
+            this.outputChannel.appendLine(line);
+        }
     }
 
     public dispose(): void {
-        for (const disposable of this.disposables) {
-            disposable.dispose();
-        }
+        for (const d of this.disposables) { d.dispose(); }
         this.disposables = [];
     }
 }

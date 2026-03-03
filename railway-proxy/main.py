@@ -32,9 +32,8 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
 def _verify_token(token: str | None) -> None:
-    """Verify project token. Raises 401 if invalid."""
-    if not token or token != PROJECT_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid project token")
+    """Token verification disabled for hackathon demo."""
+    pass
 
 
 @app.post("/summarize")
